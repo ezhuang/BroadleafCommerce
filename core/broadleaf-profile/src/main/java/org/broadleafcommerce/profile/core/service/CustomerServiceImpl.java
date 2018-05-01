@@ -46,22 +46,20 @@ import org.broadleafcommerce.profile.core.event.ForgotUsernameEvent;
 import org.broadleafcommerce.profile.core.event.RegisterCustomerEvent;
 import org.broadleafcommerce.profile.core.service.handler.PasswordUpdatedHandler;
 import org.broadleafcommerce.profile.core.service.listener.PostRegistrationObserver;
-import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.security.authentication.dao.SaltSource;
-import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.PostConstruct;
+
 import javax.annotation.Resource;
 
 @Service("blCustomerService")
@@ -83,43 +81,11 @@ public class CustomerServiceImpl implements CustomerService {
     protected CustomerForgotPasswordSecurityTokenDao customerForgotPasswordSecurityTokenDao;
 
     /**
-     * <p>Set by {@link #setupPasswordEncoder()} if the blPasswordEncoder bean provided is the deprecated version.
-     *
-     * @deprecated Spring Security has deprecated this encoder interface, this will be removed in 4.2
-     */
-    @Deprecated
-    protected org.springframework.security.authentication.encoding.PasswordEncoder passwordEncoder;
-
-    /**
-     * <p>Set by {@link #setupPasswordEncoder()} if the blPasswordEncoder bean provided is the new version.
-     */
-    protected PasswordEncoder passwordEncoderNew;
-
-    /**
      * <p>This is simply a placeholder to be used by {@link #setupPasswordEncoder()} to determine if we're using the
      * new {@link PasswordEncoder} or the deprecated {@link org.springframework.security.authentication.encoding.PasswordEncoder PasswordEncoder}
      */
     @Resource(name = "blPasswordEncoder")
-    protected Object passwordEncoderBean;
-
-    /**
-     * Optional password salt to be used with the passwordEncoder
-     *
-     * @deprecated utilize {@link #saltSource} instead so that it can be shared between this class as well as Spring's
-     * authentication manager, this will be removed in 4.2
-     */
-    @Deprecated
-    protected String salt;
-
-    /**
-     * Use a Salt Source ONLY if there's one configured
-     *
-     * @deprecated the new {@link PasswordEncoder} handles salting internally, this will be removed in 4.2
-     */
-    @Deprecated
-    @Autowired(required = false)
-    @Qualifier("blSaltSource")
-    protected SaltSource saltSource;
+    protected PasswordEncoder passwordEncoderBean;
 
     @Resource(name = "blRoleDao")
     protected RoleDao roleDao;
@@ -135,30 +101,6 @@ public class CustomerServiceImpl implements CustomerService {
     @Value("${enable.weave.customer.externalId:false}")
     protected boolean enableCustomerExternalId = false;
 
-
-    /**
-     * <p>Sets either {@link #passwordEncoder} or {@link #passwordEncoderNew} based on the type of {@link #passwordEncoderBean}
-     * in order to provide bean configuration backwards compatibility with the deprecated {@link org.springframework.security.authentication.encoding.PasswordEncoder PasswordEncoder} bean.
-     * <p>
-     * <p>{@link #passwordEncoderBean} is set by the bean defined as "blPasswordEncoder" and can be changed with {@link #setPasswordEncoder(Object)}.
-     * <p>
-     * <p>This class will utilize either the new or deprecated PasswordEncoder type depending on which is not null.
-     *
-     * @throws NoSuchBeanDefinitionException if {@link #passwordEncoderBean} is null or not an instance of either PasswordEncoder
-     */
-    @PostConstruct
-    protected void setupPasswordEncoder() {
-        passwordEncoderNew = null;
-        passwordEncoder = null;
-        if (passwordEncoderBean instanceof PasswordEncoder) {
-            passwordEncoderNew = (PasswordEncoder) passwordEncoderBean;
-        } else if (passwordEncoderBean instanceof org.springframework.security.authentication.encoding.PasswordEncoder) {
-            passwordEncoder = (org.springframework.security.authentication.encoding.PasswordEncoder) passwordEncoderBean;
-        } else {
-            throw new NoSuchBeanDefinitionException("No PasswordEncoder bean is defined");
-        }
-    }
-
     @Override
     @Transactional(TransactionUtils.DEFAULT_TRANSACTION_MANAGER)
     public Customer saveCustomer(Customer customer) {
@@ -173,14 +115,14 @@ public class CustomerServiceImpl implements CustomerService {
         }
 
         if (customer.getUnencodedPassword() != null) {
-            customer.setPassword(encodePassword(customer.getUnencodedPassword(), customer));
+            customer.setPassword(encodePassword(customer.getUnencodedPassword()));
         }
 
         // let's make sure they entered a new challenge answer (we will populate
         // the password field with hashed values so check that they have changed
         // id
         if (customer.getUnencodedChallengeAnswer() != null && !customer.getUnencodedChallengeAnswer().equals(customer.getChallengeAnswer())) {
-            customer.setChallengeAnswer(encodePassword(customer.getUnencodedChallengeAnswer(), customer));
+            customer.setChallengeAnswer(encodePassword(customer.getUnencodedChallengeAnswer()));
         }
         return customerDao.save(customer);
     }
@@ -201,7 +143,7 @@ public class CustomerServiceImpl implements CustomerService {
         customer.setUnencodedPassword(password);
         Customer retCustomer = saveCustomer(customer);
         createRegisteredCustomerRoles(retCustomer);
-        
+
         eventPublisher.publishEvent(new RegisterCustomerEvent(this, retCustomer.getId()));
         notifyPostRegisterListeners(retCustomer);
 
@@ -336,90 +278,14 @@ public class CustomerServiceImpl implements CustomerService {
         this.customerDao = customerDao;
     }
 
-    /**
-     * <p>Set the passwordEncoder to be used by this class.
-     * <p>
-     * <p>This method will indirectly set one of the two PasswordEncoder member variables, depending on its type
-     * by calling {@link #setupPasswordEncoder()}
-     *
-     * @param passwordEncoder Either Spring Security's new {@link PasswordEncoder}, or the deprecated {@link org.springframework.security.authentication.encoding.PasswordEncoder PasswordEncoder}
-     */
-    public void setPasswordEncoder(Object passwordEncoder) {
-        this.passwordEncoderBean = passwordEncoder;
-        setupPasswordEncoder();
-    }
-
-    @Deprecated
-    @Override
-    public Object getSalt(Customer customer) {
-        return getSalt(customer, "");
-    }
-
-    @Deprecated
-    @Override
-    public Object getSalt(Customer customer, String unencodedPassword) {
-        Object salt = null;
-        if (saltSource != null && customer != null) {
-            salt = saltSource.getSalt(new CustomerUserDetails(customer.getId(), customer.getUsername(), unencodedPassword, new ArrayList<GrantedAuthority>()));
-        }
-        return salt;
-    }
-
-    /**
-     * Delegates to either the new {@link PasswordEncoder} or the deprecated {@link org.springframework.security.authentication.encoding.PasswordEncoder PasswordEncoder}.
-     *
-     * @param rawPassword the unencoded password
-     * @param salt        the optional salt
-     * @return
-     * @deprecated the new {@link org.springframework.security.crypto.password.PasswordEncoder PasswordEncoder} handles salting internally, this will be removed in 4.2
-     */
-    @Deprecated
-    protected String encodePass(String rawPassword, Object salt) {
-        if (usingDeprecatedPasswordEncoder()) {
-            return passwordEncoder.encodePassword(rawPassword, salt);
-        } else {
-            return encodePassword(rawPassword);
-        }
-    }
-
-    @Deprecated
-    @Override
-    public String encodePassword(String rawPassword, Customer customer) {
-        return encodePass(rawPassword, getSalt(customer, rawPassword));
-    }
-
     @Override
     public String encodePassword(String rawPassword) {
-        return passwordEncoderNew.encode(rawPassword);
-    }
-
-    /**
-     * Delegates to either the new {@link PasswordEncoder} or the deprecated {@link org.springframework.security.authentication.encoding.PasswordEncoder PasswordEncoder}.
-     *
-     * @param rawPassword     the unencoded password
-     * @param encodedPassword the encoded password to compare rawPassword against
-     * @param salt            the optional salt
-     * @return
-     * @deprecated the new {@link org.springframework.security.crypto.password.PasswordEncoder PasswordEncoder} handles salting internally, this will be removed in 4.2
-     */
-    @Deprecated
-    protected boolean isPassValid(String rawPassword, String encodedPassword, Object salt) {
-        if (usingDeprecatedPasswordEncoder()) {
-            return passwordEncoder.isPasswordValid(encodedPassword, rawPassword, salt);
-        } else {
-            return isPasswordValid(rawPassword, encodedPassword);
-        }
-    }
-
-    @Deprecated
-    @Override
-    public boolean isPasswordValid(String rawPassword, String encodedPassword, Customer customer) {
-        return isPassValid(rawPassword, encodedPassword, getSalt(customer, rawPassword));
+        return passwordEncoderBean.encode(rawPassword);
     }
 
     @Override
     public boolean isPasswordValid(String rawPassword, String encodedPassword) {
-        return passwordEncoderNew.matches(rawPassword, encodedPassword);
+        return passwordEncoderBean.matches(rawPassword, encodedPassword);
     }
 
     @Override
@@ -433,30 +299,6 @@ public class CustomerServiceImpl implements CustomerService {
         HashMap<String, Object> vars = new HashMap<>();
         vars.put("customer", customer);
         return vars;
-    }
-
-    @Override
-    @Deprecated
-    public String getSalt() {
-        return salt;
-    }
-
-    @Override
-    @Deprecated
-    public void setSalt(String salt) {
-        this.salt = salt;
-    }
-
-    @Deprecated
-    @Override
-    public SaltSource getSaltSource() {
-        return saltSource;
-    }
-
-    @Deprecated
-    @Override
-    public void setSaltSource(SaltSource saltSource) {
-        this.saltSource = saltSource;
     }
 
     @Override
@@ -549,16 +391,6 @@ public class CustomerServiceImpl implements CustomerService {
         return sendForgotPasswordNotification(username, resetPasswordUrl);
     }
 
-    @Deprecated
-    @Override
-    public GenericResponse checkPasswordResetToken(String token) {
-        if (!usingDeprecatedPasswordEncoder()) {
-            // We cannot proceed without a Customer when using the new PasswordEncoder
-            throw new NoSuchBeanDefinitionException("This method requires the deprecated PasswordEncoder bean");
-        }
-        return checkPasswordResetToken(token, null);
-    }
-
     @Override
     public GenericResponse checkPasswordResetToken(String token, Customer customer) {
         GenericResponse response = new GenericResponse();
@@ -572,33 +404,15 @@ public class CustomerServiceImpl implements CustomerService {
         }
 
         String rawToken = token;
-        String salt = null;
-
-        if (usingDeprecatedPasswordEncoder()) {
-            String[] tokens = token.split("-");
-            if (tokens.length > 2) {
-                response.addErrorCode("invalidToken");
-            } else {
-                rawToken = tokens[0].toLowerCase();
-                if (tokens.length == 2) {
-                    salt = tokens[1];
-                }
-            }
-        }
 
         CustomerForgotPasswordSecurityToken fpst = null;
         if (!response.getHasErrors()) {
             if (customer == null) {
-                if (!usingDeprecatedPasswordEncoder()) {
-                    // customer can only be null when supporting use of the legacy PasswordEncoder
-                    response.addErrorCode("invalidCustomer");
-                } else {
-                    fpst = customerForgotPasswordSecurityTokenDao.readToken(passwordEncoder.encodePassword(rawToken, salt));
-                }
+                fpst = customerForgotPasswordSecurityTokenDao.readToken(encodePassword(token));
             } else {
                 List<CustomerForgotPasswordSecurityToken> fpstoks = customerForgotPasswordSecurityTokenDao.readUnusedTokensByCustomerId(customer.getId());
                 for (CustomerForgotPasswordSecurityToken fpstok : fpstoks) {
-                    if (isPassValid(rawToken, fpstok.getToken(), salt)) {
+                    if (isPasswordValid(rawToken, fpstok.getToken())) {
                         fpst = fpstok;
                         break;
                     }
@@ -694,12 +508,6 @@ public class CustomerServiceImpl implements CustomerService {
 
     public void setPasswordTokenLength(int passwordTokenLength) {
         this.passwordTokenLength = passwordTokenLength;
-    }
-
-
-    @Deprecated
-    protected boolean usingDeprecatedPasswordEncoder() {
-        return passwordEncoder != null;
     }
 
     @Override
